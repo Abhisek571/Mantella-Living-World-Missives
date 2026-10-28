@@ -1,0 +1,28 @@
+FormKey: 000800:Mantella Living World - Missives.esp
+EditorID: MLWM_QuestJobs
+VirtualMachineAdapter:
+  Scripts:
+  - Name: MLWM_Jobs
+    Properties:
+    - MutagenObjectType: ScriptObjectProperty
+      Name: PlayerRef
+      Object: 000014:Skyrim.esm
+  FileName: ''
+  Aliases:
+  - Property:
+      Name: ''
+      Object: 000800:Mantella Living World - Missives.esp
+      Alias: 0
+    Scripts:
+    - Name: MLWM_PlayerAlias
+Name:
+  TargetLanguage: English
+  Value: Mantella Living World - Missives jobs
+Flags:
+- StartGameEnabled
+NextAliasID: 1
+Aliases:
+- Name: PlayerAlias
+  Flags: []
+  ForcedReference: 000014:Skyrim.esm
+  VoiceTypes: Null
