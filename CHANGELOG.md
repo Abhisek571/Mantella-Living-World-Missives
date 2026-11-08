@@ -2,7 +2,7 @@
 
 Every change to Mantella Living World - Missives. The Nexus page lists only the main changes for each version.
 
-## Unreleased
+## 1.1.0 (2026-11-09)
 
 ### New
 - An NPC stops offering a job once it is taken or gone.
