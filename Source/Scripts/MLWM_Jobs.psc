@@ -30,25 +30,51 @@ Event OnNpcAdded(Form akActor)
 EndEvent
 
 ; NPCs who come to talk (Mantella Living World - World, MLWW_Initiative): a giver of a posted job nearby has work to
-; offer. Shared StorageUtil list, so neither module needs the other; each job is offered once.
+; offer. Shared StorageUtil list, so neither module needs the other; each job is offered once. An offer that is no
+; longer true (the job was taken, finished, dropped or replaced by a new one) is taken back before the giver comes over.
 Function OfferNearbyWork()
 	int n = JsonUtil.StringListCount(JOBS, "quests")
 	int i = 0
 	While i < n
 		string id = JsonUtil.StringListGet(JOBS, "quests", i)
 		Quest q = Quest.GetQuest(id)
+		If q && StorageUtil.GetIntValue(q, "MLWM_Offered") == 1
+			Actor offeredTo = StorageUtil.GetFormValue(q, "MLWM_OfferedTo") as Actor
+			If !q.IsRunning() || q.GetStage() != 0 || (offeredTo && JobLine(q, id, offeredTo) != StorageUtil.GetStringValue(q, "MLWM_OfferedLine"))
+				WithdrawOffer(q)  ; a new job on the same quest may be offered again
+			EndIf
+		EndIf
 		If q && q.IsRunning() && q.GetStage() == 0 && StorageUtil.GetIntValue(q, "MLWM_Offered") == 0
 			Actor giver = AliasActor(q, "QuestGiver")
 			If giver && giver.Is3DLoaded() && !giver.IsDead() && giver.GetDistance(PlayerRef) < 3000.0
-				StorageUtil.SetIntValue(q, "MLWM_Offered", 1)
-				StorageUtil.FormListAdd(None, "MLWW_WantsToTell", giver, false)
-				StorageUtil.SetStringValue(giver, "MLWW_WantsToTellWhy", "has work to offer: " + JobLine(q, id, giver))
+				string line = JobLine(q, id, giver)
+				If line != ""
+					StorageUtil.SetIntValue(q, "MLWM_Offered", 1)
+					StorageUtil.SetFormValue(q, "MLWM_OfferedTo", giver)
+					StorageUtil.SetStringValue(q, "MLWM_OfferedLine", line)
+					StorageUtil.FormListAdd(None, "MLWW_WantsToTell", giver, false)
+					StorageUtil.SetStringValue(giver, "MLWW_WantsToTellWhy", "has work to offer: " + line)
+				EndIf
 			EndIf
-		ElseIf q && !q.IsRunning()
-			StorageUtil.UnsetIntValue(q, "MLWM_Offered")  ; a new job on the same quest may be offered again
 		EndIf
 		i += 1
 	EndWhile
+EndFunction
+
+; Takes a job offer back: the giver no longer walks up about it (only when that is still their reason; another
+; module's reason is left alone).
+Function WithdrawOffer(Quest akQuest)
+	Actor giver = StorageUtil.GetFormValue(akQuest, "MLWM_OfferedTo") as Actor
+	If !giver
+		giver = AliasActor(akQuest, "QuestGiver")  ; offers made before the giver was stored
+	EndIf
+	If giver && StringUtil.Find(StorageUtil.GetStringValue(giver, "MLWW_WantsToTellWhy"), "has work to offer: ") == 0
+		StorageUtil.FormListRemove(None, "MLWW_WantsToTell", giver, true)
+		StorageUtil.UnsetStringValue(giver, "MLWW_WantsToTellWhy")
+	EndIf
+	StorageUtil.UnsetIntValue(akQuest, "MLWM_Offered")
+	StorageUtil.UnsetFormValue(akQuest, "MLWM_OfferedTo")
+	StorageUtil.UnsetStringValue(akQuest, "MLWM_OfferedLine")
 EndFunction
 
 ; One sentence per job this NPC gave (at most 2), or "".
@@ -77,12 +103,15 @@ EndFunction
 
 ; The job in this NPC's words, if they are its giver.
 string Function JobLine(Quest akQuest, string asId, Actor akNpc)
-	bool bounty = StringUtil.Find(asId, "Kill") >= 0 || StringUtil.Find(asId, "TrackFugitive") >= 0
+	; a quest with a QuestGiver (Missives Expansion KillPests) is that person's job, not a hold bounty
+	Actor giver = AliasActor(akQuest, "QuestGiver")
+	bool kill = StringUtil.Find(asId, "Kill") >= 0
+	bool bounty = !giver && (kill || StringUtil.Find(asId, "TrackFugitive") >= 0)
 	If bounty
 		If AliasActor(akQuest, "Steward") != akNpc && AliasActor(akQuest, "Jarl") != akNpc
 			Return ""
 		EndIf
-	ElseIf AliasActor(akQuest, "QuestGiver") != akNpc
+	ElseIf !giver || giver != akNpc
 		Return ""
 	EndIf
 	string item = AliasItem(akQuest, "Item")
@@ -96,12 +125,21 @@ string Function JobLine(Quest akQuest, string asId, Actor akNpc)
 			target = AliasName(akQuest, "Criminal")
 		EndIf
 		string place = AliasPlace(akQuest, "Dungeon")
+		If place == ""
+			place = AliasPlace(akQuest, "Den")
+		EndIf
 		what = "The hold has posted a bounty"
 		If target != ""
 			what += " on " + target
 		EndIf
 		If place != ""
 			what += " at " + place
+		EndIf
+	ElseIf kill
+		what = "You want the " + Either(AliasName(akQuest, "Target"), "pests") + " near your place dealt with"
+		string den = AliasPlace(akQuest, "Den")
+		If den != ""
+			what += "; they are at " + den
 		EndIf
 	ElseIf StringUtil.Find(asId, "Courier") >= 0
 		what = "You need " + Either(item, "a package") + " delivered"
