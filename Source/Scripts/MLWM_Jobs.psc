@@ -68,7 +68,15 @@ Function WithdrawOffer(Quest akQuest)
 	If !giver
 		giver = AliasActor(akQuest, "QuestGiver")  ; offers made before the giver was stored
 	EndIf
-	If giver && StringUtil.Find(StorageUtil.GetStringValue(giver, "MLWW_WantsToTellWhy"), "has work to offer: ") == 0
+	; Only when the reason is this job's line: one giver with two jobs keeps the reason of the other one. Offers made
+	; before the line was stored match on the prefix.
+	string why = StorageUtil.GetStringValue(giver, "MLWW_WantsToTellWhy")
+	string offered = StorageUtil.GetStringValue(akQuest, "MLWM_OfferedLine")
+	bool ours = StringUtil.Find(why, "has work to offer: ") == 0
+	If offered != ""
+		ours = why == "has work to offer: " + offered
+	EndIf
+	If giver && ours
 		StorageUtil.FormListRemove(None, "MLWW_WantsToTell", giver, true)
 		StorageUtil.UnsetStringValue(giver, "MLWW_WantsToTellWhy")
 	EndIf
