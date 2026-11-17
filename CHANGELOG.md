@@ -7,6 +7,9 @@ Every change to Mantella Living World - Missives. The Nexus page lists only the 
 ### Changed
 - The job quests are looked through only when Missives is installed, once per location change (not again at every talk start), with what each job giver posted kept until then.
 
+### Fixed
+- A job giver talked to while the job list is being rebuilt no longer denies her notice, and a giver whose job quest was restarted with someone else no longer claims the job.
+
 ## 1.1.0 (2026-11-09)
 
 ### New

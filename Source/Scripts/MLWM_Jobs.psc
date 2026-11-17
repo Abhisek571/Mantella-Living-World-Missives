@@ -54,6 +54,7 @@ Function OfferNearbyWork()
 	scanning = true
 	; offers are for World's NPCs who walk up to the player; without World only the giver cache is built
 	bool offers = Game.IsPluginInstalled("Mantella Living World - World.esp")
+	cached = false  ; while the cache is emptied and built again, a join reads the quests (ScanJobs), not half a cache
 	ClearCache()
 	int n = JsonUtil.StringListCount(JOBS, "quests")
 	int i = 0
@@ -170,8 +171,8 @@ string Function CachedJobs(Actor akNpc)
 		string id = StorageUtil.StringListGet(akNpc, "MLWM_JobIds", i)
 		string line = StorageUtil.StringListGet(akNpc, "MLWM_JobLines", i)
 		Quest q = Quest.GetQuest(id)
-		If !q || !q.IsRunning() || q.GetStage() >= 100
-			line = ""
+		If !q || !q.IsRunning() || q.GetStage() >= 100 || !StillGiver(q, akNpc)
+			line = ""  ; gone, finished, or the quest was started again with another giver
 		ElseIf q.GetStage() != StorageUtil.IntListGet(akNpc, "MLWM_JobStages", i)
 			line = JobLine(q, id, akNpc)
 		EndIf
@@ -275,6 +276,15 @@ string Function JobLine(Quest akQuest, string asId, Actor akNpc)
 		Return what + "; " + PlayerRef.GetDisplayName() + " took your notice from the job board and is on it."
 	EndIf
 	Return what + "; you posted a notice on the job board for it, and whoever wants the work takes the notice from there."
+EndFunction
+
+; akNpc still holds the job quest's giver role, as CacheQuest picks it: the quest giver, else the steward or the Jarl.
+bool Function StillGiver(Quest akQuest, Actor akNpc)
+	Actor giver = AliasActor(akQuest, "QuestGiver")
+	If giver
+		Return giver == akNpc
+	EndIf
+	Return AliasActor(akQuest, "Steward") == akNpc || AliasActor(akQuest, "Jarl") == akNpc
 EndFunction
 
 Actor Function AliasActor(Quest akQuest, string asAlias)
