@@ -15,24 +15,46 @@ Event OnInit()
 	Register()
 EndEvent
 
+bool scanning = false  ; one scan of the job quests at a time
+bool cached = false  ; the giver cache was built this session
+
 Function Register()
 	RegisterForModEvent("MantellaConversation_NPC_Added", "OnNpcAdded")
+	scanning = false
+	cached = false  ; quests and aliases may differ in the loaded save: built again at the next location change or join
+EndFunction
+
+bool Function MissivesLoaded()
+	Return Game.IsPluginInstalled("Missives.esp")
 EndFunction
 
 Event OnNpcAdded(Form akActor)
+	If StorageUtil.GetIntValue(None, "MLW_TimingOn", 0) == 1  ; speed testing (off by default): one stage-time row
+		MiscUtil.WriteToFile("Data/SKSE/Plugins/StorageUtilData/MantellaLivingWorld/timing_game.csv", StorageUtil.GetIntValue(None, "MLW_TimingTalk", 0) + "," + Utility.GetCurrentRealTime() + ",MLWM_Jobs,OnNpcAdded_start,\n", true, false)
+	EndIf
 	Actor npc = akActor as Actor
-	If !npc || npc == PlayerRef
+	If !npc || npc == PlayerRef || !MissivesLoaded()
 		Return
 	EndIf
 	string path = DIR + BaseId(npc) + ".json"
 	JsonUtil.SetStringValue(path, "job", JobsOf(npc))
 	JsonUtil.Save(path)
+	If StorageUtil.GetIntValue(None, "MLW_TimingOn", 0) == 1  ; speed testing (off by default): one stage-time row
+		MiscUtil.WriteToFile("Data/SKSE/Plugins/StorageUtilData/MantellaLivingWorld/timing_game.csv", StorageUtil.GetIntValue(None, "MLW_TimingTalk", 0) + "," + Utility.GetCurrentRealTime() + ",MLWM_Jobs,OnNpcAdded_end,\n", true, false)
+	EndIf
 EndEvent
 
 ; NPCs who come to talk (Mantella Living World - World, MLWW_Initiative): a giver of a posted job nearby has work to
 ; offer. Shared StorageUtil list, so neither module needs the other; each job is offered once. An offer that is no
 ; longer true (the job was taken, finished, dropped or replaced by a new one) is taken back before the giver comes over.
 Function OfferNearbyWork()
+	If scanning || !MissivesLoaded()
+		Return
+	EndIf
+	scanning = true
+	; offers are for World's NPCs who walk up to the player; without World only the giver cache is built
+	bool offers = Game.IsPluginInstalled("Mantella Living World - World.esp")
+	ClearCache()
 	int n = JsonUtil.StringListCount(JOBS, "quests")
 	int i = 0
 	While i < n
@@ -44,7 +66,10 @@ Function OfferNearbyWork()
 				WithdrawOffer(q)  ; a new job on the same quest may be offered again
 			EndIf
 		EndIf
-		If q && q.IsRunning() && q.GetStage() == 0 && StorageUtil.GetIntValue(q, "MLWM_Offered") == 0
+		If q && q.IsRunning() && q.GetStage() < 100
+			CacheQuest(q, id)
+		EndIf
+		If offers && q && q.IsRunning() && q.GetStage() == 0 && StorageUtil.GetIntValue(q, "MLWM_Offered") == 0
 			Actor giver = AliasActor(q, "QuestGiver")
 			If giver && giver.Is3DLoaded() && !giver.IsDead() && giver.GetDistance(PlayerRef) < 3000.0
 				string line = JobLine(q, id, giver)
@@ -58,6 +83,45 @@ Function OfferNearbyWork()
 			EndIf
 		EndIf
 		i += 1
+	EndWhile
+	cached = true
+	scanning = false
+EndFunction
+
+; The giver cache: on each giver, the job quests they gave ("MLWM_JobIds") with the stage the line was made at
+; ("MLWM_JobStages") and the line ("MLWM_JobLines"), so a join reads that instead of every job quest.
+Function ClearCache()
+	int i = StorageUtil.FormListCount(self, "MLWM_CachedGivers")
+	While i > 0
+		i -= 1
+		Form giver = StorageUtil.FormListGet(self, "MLWM_CachedGivers", i)
+		StorageUtil.StringListClear(giver, "MLWM_JobIds")
+		StorageUtil.IntListClear(giver, "MLWM_JobStages")
+		StorageUtil.StringListClear(giver, "MLWM_JobLines")
+	EndWhile
+	StorageUtil.FormListClear(self, "MLWM_CachedGivers")
+EndFunction
+
+Function CacheQuest(Quest akQuest, string asId)
+	Actor[] candidates = new Actor[3]
+	candidates[0] = AliasActor(akQuest, "QuestGiver")
+	If !candidates[0]
+		candidates[1] = AliasActor(akQuest, "Steward")
+		candidates[2] = AliasActor(akQuest, "Jarl")
+	EndIf
+	int c = 0
+	While c < 3
+		Actor who = candidates[c]
+		If who
+			string line = JobLine(akQuest, asId, who)
+			If line != ""
+				StorageUtil.FormListAdd(self, "MLWM_CachedGivers", who, false)
+				StorageUtil.StringListAdd(who, "MLWM_JobIds", asId)
+				StorageUtil.IntListAdd(who, "MLWM_JobStages", akQuest.GetStage())
+				StorageUtil.StringListAdd(who, "MLWM_JobLines", line)
+			EndIf
+		EndIf
+		c += 1
 	EndWhile
 EndFunction
 
@@ -85,8 +149,45 @@ Function WithdrawOffer(Quest akQuest)
 	StorageUtil.UnsetStringValue(akQuest, "MLWM_OfferedLine")
 EndFunction
 
-; One sentence per job this NPC gave (at most 2), or "".
+; One sentence per job this NPC gave (at most 2), or "". From the giver cache when it was built this session: only a
+; job whose stage changed since is worked out again (taken from the board, finished).
 string Function JobsOf(Actor akNpc)
+	If !cached && !scanning
+		OfferNearbyWork()  ; the first join after a load, before any location change
+	EndIf
+	If cached
+		Return CachedJobs(akNpc)
+	EndIf
+	Return ScanJobs(akNpc)
+EndFunction
+
+string Function CachedJobs(Actor akNpc)
+	string out = ""
+	int found = 0
+	int count = StorageUtil.StringListCount(akNpc, "MLWM_JobIds")
+	int i = 0
+	While i < count && found < 2
+		string id = StorageUtil.StringListGet(akNpc, "MLWM_JobIds", i)
+		string line = StorageUtil.StringListGet(akNpc, "MLWM_JobLines", i)
+		Quest q = Quest.GetQuest(id)
+		If !q || !q.IsRunning() || q.GetStage() >= 100
+			line = ""
+		ElseIf q.GetStage() != StorageUtil.IntListGet(akNpc, "MLWM_JobStages", i)
+			line = JobLine(q, id, akNpc)
+		EndIf
+		If line != ""
+			If out != ""
+				out += " "
+			EndIf
+			out += line
+			found += 1
+		EndIf
+		i += 1
+	EndWhile
+	Return out
+EndFunction
+
+string Function ScanJobs(Actor akNpc)
 	string out = ""
 	int found = 0
 	int n = JsonUtil.StringListCount(JOBS, "quests")

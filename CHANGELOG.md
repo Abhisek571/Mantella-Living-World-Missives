@@ -2,6 +2,11 @@
 
 Every change to Mantella Living World - Missives. The Nexus page lists only the main changes for each version.
 
+## Unreleased
+
+### Changed
+- The job quests are looked through only when Missives is installed, once per location change (not again at every talk start), with what each job giver posted kept until then.
+
 ## 1.1.0 (2026-11-09)
 
 ### New
