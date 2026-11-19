@@ -38,9 +38,7 @@ bool Function MissivesLoaded()
 EndFunction
 
 Event OnNpcAdded(Form akActor)
-	If StorageUtil.GetIntValue(None, "MLW_TimingOn", 0) == 1  ; speed testing (off by default): one stage-time row
-		MiscUtil.WriteToFile("Data/SKSE/Plugins/StorageUtilData/MantellaLivingWorld/timing_game.csv", StorageUtil.GetIntValue(None, "MLW_TimingTalk", 0) + "," + Utility.GetCurrentRealTime() + ",MLWM_Jobs,OnNpcAdded_start,\n", true, false)
-	EndIf
+	TimingRow("OnNpcAdded_start")
 	Actor npc = akActor as Actor
 	If !npc || npc == PlayerRef
 		Return
@@ -54,10 +52,15 @@ Event OnNpcAdded(Form akActor)
 		JsonUtil.SetStringValue(path, "job", job)
 		JsonUtil.Save(path)
 	EndIf
-	If StorageUtil.GetIntValue(None, "MLW_TimingOn", 0) == 1  ; speed testing (off by default): one stage-time row
-		MiscUtil.WriteToFile("Data/SKSE/Plugins/StorageUtilData/MantellaLivingWorld/timing_game.csv", StorageUtil.GetIntValue(None, "MLW_TimingTalk", 0) + "," + Utility.GetCurrentRealTime() + ",MLWM_Jobs,OnNpcAdded_end,\n", true, false)
-	EndIf
+	TimingRow("OnNpcAdded_end")
 EndEvent
+
+; Speed testing (off by default): one stage-time row for this script.
+Function TimingRow(string asStage)
+	If StorageUtil.GetIntValue(None, "MLW_TimingOn", 0) == 1
+		MiscUtil.WriteToFile("Data/SKSE/Plugins/StorageUtilData/MantellaLivingWorld/timing_game.csv", StorageUtil.GetIntValue(None, "MLW_TimingTalk", 0) + "," + Utility.GetCurrentRealTime() + ",MLWM_Jobs," + asStage + ",\n", true, false)
+	EndIf
+EndFunction
 
 ; NPCs who come to talk (Mantella Living World - World, MLWW_Initiative): a giver of a posted job nearby has work to
 ; offer. Shared StorageUtil list, so neither module needs the other; each job is offered once. An offer that is no
@@ -85,35 +88,10 @@ Function OfferNearbyWork(bool abLocationChange = true)
 	While again
 		cached = false  ; while the cache is emptied and built again, a join reads the quests (ScanJobs), not half a cache
 		ClearCache()
-		int n = JsonUtil.StringListCount(JOBS, "quests")
+		int questCount = JsonUtil.StringListCount(JOBS, "quests")
 		int i = 0
-		While i < n
-			string id = JsonUtil.StringListGet(JOBS, "quests", i)
-			Quest q = Quest.GetQuest(id)
-			If q && StorageUtil.GetIntValue(q, "MLWM_Offered") == 1
-				Actor offeredTo = StorageUtil.GetFormValue(q, "MLWM_OfferedTo") as Actor
-				If !q.IsRunning() || q.GetStage() != 0 || (offeredTo && JobLine(q, id, offeredTo) != StorageUtil.GetStringValue(q, "MLWM_OfferedLine"))
-					WithdrawOffer(q)  ; a new job on the same quest may be offered again
-				EndIf
-			EndIf
-			If q && q.IsRunning() && q.GetStage() < 100
-				CacheQuest(q, id)
-			EndIf
-			If offers && q && q.IsRunning() && q.GetStage() == 0 && StorageUtil.GetIntValue(q, "MLWM_Offered") == 0
-				Actor giver = AliasActor(q, "QuestGiver")
-				If giver && giver.Is3DLoaded() && !giver.IsDead() && giver.GetDistance(PlayerRef) < 3000.0
-					string line = JobLine(q, id, giver)
-					If line != ""
-						StorageUtil.SetIntValue(q, "MLWM_Offered", 1)
-						StorageUtil.SetFormValue(q, "MLWM_OfferedTo", giver)
-						StorageUtil.SetStringValue(q, "MLWM_OfferedLine", line)
-						StorageUtil.FormListAdd(None, "MLWW_WantsToTell", giver, false)
-						StorageUtil.SetStringValue(giver, "MLWW_WantsToTellWhy", "has work to offer: " + line)
-						StorageUtil.SetFormValue(giver, "MLWW_WantsToTellQuest", q)  ; World drops the visit when this quest moves on
-						StorageUtil.SetIntValue(giver, "MLWW_WantsToTellStage", q.GetStage())
-					EndIf
-				EndIf
-			EndIf
+		While i < questCount
+			ScanQuest(JsonUtil.StringListGet(JOBS, "quests", i), offers)
 			i += 1
 		EndWhile
 		cached = true
@@ -124,6 +102,49 @@ Function OfferNearbyWork(bool abLocationChange = true)
 		rescan = false
 	EndWhile
 	scanning = false
+EndFunction
+
+; One job quest of the scan: takes back an offer that is no longer true, adds the quest to the giver cache, and offers
+; a posted job whose giver is near the player (abOffers: World is installed).
+Function ScanQuest(string asId, bool abOffers)
+	Quest jobQuest = Quest.GetQuest(asId)
+	If !jobQuest
+		Return
+	EndIf
+	If StorageUtil.GetIntValue(jobQuest, "MLWM_Offered") == 1 && OfferIsStale(jobQuest, asId)
+		WithdrawOffer(jobQuest)  ; a new job on the same quest may be offered again
+	EndIf
+	If jobQuest.IsRunning() && jobQuest.GetStage() < 100
+		CacheQuest(jobQuest, asId)
+	EndIf
+	If abOffers && jobQuest.IsRunning() && jobQuest.GetStage() == 0 && StorageUtil.GetIntValue(jobQuest, "MLWM_Offered") == 0
+		OfferJob(jobQuest, asId)
+	EndIf
+EndFunction
+
+; An offer made on this quest is no longer true: the job was taken, finished or dropped, or a new job replaced it.
+bool Function OfferIsStale(Quest akQuest, string asId)
+	Actor offeredTo = StorageUtil.GetFormValue(akQuest, "MLWM_OfferedTo") as Actor
+	Return !akQuest.IsRunning() || akQuest.GetStage() != 0 || (offeredTo && JobLine(akQuest, asId, offeredTo) != StorageUtil.GetStringValue(akQuest, "MLWM_OfferedLine"))
+EndFunction
+
+; The giver of a posted job, when near the player, wants to walk up and offer it (World's shared list).
+Function OfferJob(Quest akQuest, string asId)
+	Actor giver = AliasActor(akQuest, "QuestGiver")
+	If !giver || !giver.Is3DLoaded() || giver.IsDead() || giver.GetDistance(PlayerRef) >= 3000.0
+		Return
+	EndIf
+	string line = JobLine(akQuest, asId, giver)
+	If line == ""
+		Return
+	EndIf
+	StorageUtil.SetIntValue(akQuest, "MLWM_Offered", 1)
+	StorageUtil.SetFormValue(akQuest, "MLWM_OfferedTo", giver)
+	StorageUtil.SetStringValue(akQuest, "MLWM_OfferedLine", line)
+	StorageUtil.FormListAdd(None, "MLWW_WantsToTell", giver, false)
+	StorageUtil.SetStringValue(giver, "MLWW_WantsToTellWhy", "has work to offer: " + line)
+	StorageUtil.SetFormValue(giver, "MLWW_WantsToTellQuest", akQuest)  ; World drops the visit when this quest moves on
+	StorageUtil.SetIntValue(giver, "MLWW_WantsToTellStage", akQuest.GetStage())
 EndFunction
 
 ; The giver cache: on each giver, the job quests they gave ("MLWM_JobIds") with the stage the line was made at
@@ -147,9 +168,9 @@ Function CacheQuest(Quest akQuest, string asId)
 		candidates[1] = AliasActor(akQuest, "Steward")
 		candidates[2] = AliasActor(akQuest, "Jarl")
 	EndIf
-	int c = 0
-	While c < 3
-		Actor who = candidates[c]
+	int i = 0
+	While i < 3
+		Actor who = candidates[i]
 		If who
 			string line = JobLine(akQuest, asId, who)
 			If line != ""
@@ -159,7 +180,7 @@ Function CacheQuest(Quest akQuest, string asId)
 				StorageUtil.StringListAdd(who, "MLWM_JobLines", line)
 			EndIf
 		EndIf
-		c += 1
+		i += 1
 	EndWhile
 EndFunction
 
@@ -209,9 +230,9 @@ string Function CachedJobs(Actor akNpc)
 	While i < count && found < 2
 		string id = StorageUtil.StringListGet(akNpc, "MLWM_JobIds", i)
 		string line = ""
-		Quest q = Quest.GetQuest(id)
-		If q && q.IsRunning() && q.GetStage() < 100 && StillGiver(q, akNpc)  ; not gone, finished, or given to another
-			line = JobLine(q, id, akNpc)
+		Quest jobQuest = Quest.GetQuest(id)
+		If jobQuest && jobQuest.IsRunning() && jobQuest.GetStage() < 100 && StillGiver(jobQuest, akNpc)  ; not gone, finished, or given to another
+			line = JobLine(jobQuest, id, akNpc)
 		EndIf
 		If line != ""
 			If out != ""
@@ -228,13 +249,13 @@ EndFunction
 string Function ScanJobs(Actor akNpc)
 	string out = ""
 	int found = 0
-	int n = JsonUtil.StringListCount(JOBS, "quests")
+	int questCount = JsonUtil.StringListCount(JOBS, "quests")
 	int i = 0
-	While i < n && found < 2
+	While i < questCount && found < 2
 		string id = JsonUtil.StringListGet(JOBS, "quests", i)
-		Quest q = Quest.GetQuest(id)
-		If q && q.IsRunning() && q.GetStage() < 100
-			string line = JobLine(q, id, akNpc)
+		Quest jobQuest = Quest.GetQuest(id)
+		If jobQuest && jobQuest.IsRunning() && jobQuest.GetStage() < 100
+			string line = JobLine(jobQuest, id, akNpc)
 			If line != ""
 				If out != ""
 					out += " "
@@ -326,33 +347,33 @@ bool Function StillGiver(Quest akQuest, Actor akNpc)
 EndFunction
 
 Actor Function AliasActor(Quest akQuest, string asAlias)
-	ReferenceAlias a = akQuest.GetAliasByName(asAlias) as ReferenceAlias
-	If a
-		Return a.GetActorRef()
+	ReferenceAlias refAlias = akQuest.GetAliasByName(asAlias) as ReferenceAlias
+	If refAlias
+		Return refAlias.GetActorRef()
 	EndIf
 	Return None
 EndFunction
 
 string Function AliasName(Quest akQuest, string asAlias)
-	ReferenceAlias a = akQuest.GetAliasByName(asAlias) as ReferenceAlias
-	If a && a.GetRef()
-		Return a.GetRef().GetDisplayName()
+	ReferenceAlias refAlias = akQuest.GetAliasByName(asAlias) as ReferenceAlias
+	If refAlias && refAlias.GetRef()
+		Return refAlias.GetRef().GetDisplayName()
 	EndIf
 	Return ""
 EndFunction
 
 string Function AliasItem(Quest akQuest, string asAlias)
-	ReferenceAlias a = akQuest.GetAliasByName(asAlias) as ReferenceAlias
-	If a && a.GetRef() && a.GetRef().GetBaseObject()
-		Return a.GetRef().GetBaseObject().GetName()
+	ReferenceAlias refAlias = akQuest.GetAliasByName(asAlias) as ReferenceAlias
+	If refAlias && refAlias.GetRef() && refAlias.GetRef().GetBaseObject()
+		Return refAlias.GetRef().GetBaseObject().GetName()
 	EndIf
 	Return ""
 EndFunction
 
 string Function AliasPlace(Quest akQuest, string asAlias)
-	LocationAlias l = akQuest.GetAliasByName(asAlias) as LocationAlias
-	If l && l.GetLocation()
-		Return l.GetLocation().GetName()
+	LocationAlias locAlias = akQuest.GetAliasByName(asAlias) as LocationAlias
+	If locAlias && locAlias.GetLocation()
+		Return locAlias.GetLocation().GetName()
 	EndIf
 	Return ""
 EndFunction
@@ -367,12 +388,12 @@ EndFunction
 ; The base record's FormID as its last 6 hex digits, like the Integration Hub's file channel.
 string Function BaseId(Actor akNpc)
 	string digits = "0123456789ABCDEF"
-	int v = akNpc.GetActorBase().GetFormID()
+	int value = akNpc.GetActorBase().GetFormID()
 	string out = ""
 	int i = 0
 	While i < 6
-		out = StringUtil.GetNthChar(digits, Math.LogicalAnd(v, 15)) + out
-		v = Math.RightShift(v, 4)
+		out = StringUtil.GetNthChar(digits, Math.LogicalAnd(value, 15)) + out
+		value = Math.RightShift(value, 4)
 		i += 1
 	EndWhile
 	Return out
